@@ -1,5 +1,5 @@
 mod dsu;
-use dsu::{dsu_error::DsuError, dsu_provider::DsuProvider, providers::{sdl_provider::SdlProvider, steam_controller_provider::SteamControllerProvider, windows_provider::WindowsProvider}};
+use dsu::{dsu_error::DsuError, dsu_provider::DsuProvider, providers::{sdl_provider::SdlProvider, steam_controller_provider::SteamControllerProvider}};
 use tokio::net::UdpSocket;
 
 
@@ -35,8 +35,6 @@ fn get_provider() -> Result<Box<dyn DsuProvider>, DsuError> {
         Box::new(provider)
     }
 
-    WindowsProvider::new()
-        .map(box_provider)
-        .or_else(|_| SteamControllerProvider::new().map(box_provider))
-        // .or_else(|_| SdlProvider::new().map(box_provider))
+    SteamControllerProvider::new().map(box_provider)
+    
 }

@@ -7,6 +7,7 @@ pub struct SteamControllerProvider {
     device: Option<hidapi::HidDevice>
 }
 
+const STEAM_DECK_PROD_ID: u16 = 0x1205;
 const STEAM_CONTROLLER_PROD_ID: u16 = 0x1142;
 const VALVE_VENDOR_ID: u16 = 0x28de;
 // Define constants based on the Python code
@@ -20,7 +21,7 @@ impl SteamControllerProvider {
          // Vendor ID and Product ID for Steam Controller
         let mut controller = SteamControllerProvider { device: None, hid_api: api };
         controller.detect_controller();
-        controller.enable_gyro()?;
+        // controller.enable_gyro()?;
         Ok(controller)
     }
 
@@ -63,9 +64,9 @@ impl SteamControllerProvider {
     fn detect_controller(&mut self) {
         let steam_controller = self.hid_api
             .device_list()
-            .filter(|device| device.product_id() == STEAM_CONTROLLER_PROD_ID
+            .filter(|device| device.product_id() == STEAM_DECK_PROD_ID
                 && device.vendor_id() == VALVE_VENDOR_ID)
-            .skip(1)
+            .skip(2)
             .take(1)
             .map(|device| device.open_device(&self.hid_api))
             .last();
@@ -92,7 +93,7 @@ impl SteamControllerProvider {
             .ok_or(DsuError::from(String::from("Device not found")))
             .and_then(|device| {
                 println!("trying to read into buffer");
-                let mut buf = [0u8; 128];
+                let mut buf = [0u8; 64];
                 let bytes_read = device.read(&mut buf)?;
                 println!("successfully read {} bytes into buffer", bytes_read);
                 for (i, byte) in buf.iter().enumerate() {
@@ -101,13 +102,13 @@ impl SteamControllerProvider {
                     }
                     print!("{:02x},", byte);
                 }
-                let ax = f64::from(buf[0]);
-                let ay = f64::from(buf[1]);
-                let az = f64::from(buf[2]);
-                let gx = f64::from(buf[3]);
-                let gy = f64::from(buf[4]);
-                let gz = f64::from(buf[5]);
-                Ok((ax, ay, az, gx, gy, gz))
+                let ax = f32::from(((buf[25] as u16) << 8) | buf[26] as u16);
+                let ay = f32::from(((buf[27] as u16) << 8) | buf[28] as u16);
+                let az = f32::from(((buf[29] as u16) << 8) | buf[30] as u16);
+                let gx = f32::from(((buf[31] as u16) << 8) | buf[32] as u16);
+                let gy = f32::from(((buf[33] as u16) << 8) | buf[34] as u16);
+                let gz = f32::from(((buf[35] as u16) << 8) | buf[36] as u16);
+                Ok((ax as f64, ay as f64, az as f64, gx as f64, gy as f64, gz as f64))
             })
     }
 }
