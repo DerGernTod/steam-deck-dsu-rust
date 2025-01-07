@@ -4,9 +4,14 @@ use crate::dsu::{dsu_error::DsuError, dsu_provider::DsuProvider};
 
 pub struct SteamControllerProvider {
     hid_api: HidApi,
-    device: Option<hidapi::HidDevice>
+    device: Option<hidapi::HidDevice>,
+    accel: (f32, f32, f32),
+    gyro: (f32, f32, f32)
 }
-
+const ACC_1G: f32 = 0x4000 as f32;
+const GYRO_1DEGPERSEC: f32 = 16.0;
+const ACCEL_SMOOTH: i16 = 0x1FF;
+const GYRO_DEADZONE: f32 = 8.0;
 const STEAM_DECK_PROD_ID: u16 = 0x1205;
 const STEAM_CONTROLLER_PROD_ID: u16 = 0x1142;
 const VALVE_VENDOR_ID: u16 = 0x28de;
@@ -19,50 +24,19 @@ impl SteamControllerProvider {
     pub fn new() -> Result<SteamControllerProvider, DsuError> {
         let api = HidApi::new()?;
          // Vendor ID and Product ID for Steam Controller
-        let mut controller = SteamControllerProvider { device: None, hid_api: api };
+        let mut controller = SteamControllerProvider {
+            device: None,
+            hid_api: api,
+            accel: (0.0, 0.0, 0.0),
+            gyro: (0.0, 0.0, 0.0)
+        };
         controller.detect_controller();
         // controller.enable_gyro()?;
         Ok(controller)
     }
 
-    fn enable_gyro(&self) -> Result<(), DsuError> {
-        // Placeholder values for unknown1 and unknown2
-        let unknown1: [u8; 13] = [0x18, 0x00, 0x00, 0x31, 0x02, 0x00, 0x08, 0x07, 0x00, 0x07, 0x07, 0x00, 0x30];
-        let unknown2: [u8; 2] = [0x00, 0x2e];
-
-        // Enable gyroscope
-        let enable_gyros: u8 = 0x14;
-            // Idle timeout (example 600 seconds)
-        let idle_timeout: u16 = 600;
-        let timeout1: u8 = (idle_timeout & 0x00FF) as u8;
-        let timeout2: u8 = ((idle_timeout & 0xFF00) >> 8) as u8;
-
-        // Create the buffer to send
-        let mut buffer: Vec<u8> = Vec::with_capacity(64);
-        buffer.push(SCPacketType_CONFIGURE);
-        buffer.push(SCPacketLength_CONFIGURE);
-        buffer.push(SCConfigType_CONFIGURE);
-        buffer.push(timeout1);
-        buffer.push(timeout2);
-        buffer.extend_from_slice(&unknown1);
-        buffer.push(enable_gyros);
-        buffer.extend_from_slice(&unknown2);
-        // Ensure the buffer is 64 bytes long
-        buffer.resize(64, 0); 
-
-        // Write the buffer to the device
-        self.device
-            .as_ref()
-            .ok_or(DsuError::from(String::from("Device not found")))
-            .and_then(|device| {
-                let bytes_written = device.write(&buffer)?;
-                println!("Wrote {} bytes", bytes_written);
-                Ok(())
-            })
-    }
-
     fn detect_controller(&mut self) {
-        let steam_controller = self.hid_api
+        let steam_deck_controller = self.hid_api
             .device_list()
             .filter(|device| device.product_id() == STEAM_DECK_PROD_ID
                 && device.vendor_id() == VALVE_VENDOR_ID)
@@ -71,7 +45,7 @@ impl SteamControllerProvider {
             .map(|device| device.open_device(&self.hid_api))
             .last();
         
-        self.device = steam_controller.and_then(|device| device.ok());
+        self.device = steam_deck_controller.and_then(|device| device.ok());
 
         if let Some(device) = &self.device {
             let mut buf = [0u8; MAX_REPORT_DESCRIPTOR_SIZE];
@@ -84,12 +58,13 @@ impl SteamControllerProvider {
                     print!("{:02x},", byte);
                 }
             }
+            println!();
         }
     }
 
-    fn read_motion_data(&self) -> Result<(f64, f64, f64, f64, f64, f64), DsuError> {
+    fn poll_events(&mut self) -> Result<(), DsuError> {
         self.device
-            .as_ref()
+            .as_mut()
             .ok_or(DsuError::from(String::from("Device not found")))
             .and_then(|device| {
                 println!("trying to read into buffer");
@@ -102,14 +77,53 @@ impl SteamControllerProvider {
                     }
                     print!("{:02x},", byte);
                 }
-                let ax = f32::from(((buf[25] as u16) << 8) | buf[26] as u16);
-                let ay = f32::from(((buf[27] as u16) << 8) | buf[28] as u16);
-                let az = f32::from(((buf[29] as u16) << 8) | buf[30] as u16);
-                let gx = f32::from(((buf[31] as u16) << 8) | buf[32] as u16);
-                let gy = f32::from(((buf[33] as u16) << 8) | buf[34] as u16);
-                let gz = f32::from(((buf[35] as u16) << 8) | buf[36] as u16);
-                Ok((ax as f64, ay as f64, az as f64, gx as f64, gy as f64, gz as f64))
+                println!();
+                let (ax, ay, az) = accel_from_buffer(&buf);
+                self.accel = (
+                    smooth_accel(self.accel.0, ax),
+                    smooth_accel(self.accel.1, ay),
+                    smooth_accel(self.accel.2, az)
+                );
+                self.gyro = gyro_from_buffer(&buf);
+                Ok(())
             })
+    }
+
+    fn read_motion_data(&self) -> Result<(f64, f64, f64, f64, f64, f64), DsuError> {
+        let (ax, ay, az) = self.accel;
+        let (gx, gy, gz) = self.gyro;
+        Ok((ax as f64, ay as f64, az as f64, gx as f64, gy as f64, gz as f64))
+    }
+}
+
+fn accel_from_buffer(buf: &[u8; 64]) -> (f32, f32, f32) {
+    let ax = f32::from(((buf[25] as u16) << 8) | buf[26] as u16);
+    let ay = f32::from(((buf[27] as u16) << 8) | buf[28] as u16);
+    let az = f32::from(((buf[29] as u16) << 8) | buf[30] as u16);
+    (ax as f32, ay as f32, az as f32)
+}
+
+fn gyro_from_buffer(buf: &[u8; 64]) -> (f32, f32, f32) {
+    let gx = f32::from(((buf[31] as u16) << 8) | buf[32] as u16);
+    let gy = f32::from(((buf[33] as u16) << 8) | buf[34] as u16);
+    let gz = f32::from(((buf[35] as u16) << 8) | buf[36] as u16);
+    (gx as f32, gy as f32, gz as f32)
+}
+
+fn smooth_accel(last: f32, curr: f32) -> f32 {
+    let new = if (curr - last).abs() < ACCEL_SMOOTH as f32 {
+        last * 0.95 + curr * 0.05
+    } else {
+        curr
+    };
+    new / ACC_1G
+}
+
+fn convert_gyro_to_dps(gyro_value: f32) -> f32 {
+    if gyro_value.abs() < GYRO_DEADZONE {
+        0.0
+    } else {
+        gyro_value / GYRO_1DEGPERSEC
     }
 }
 
@@ -122,5 +136,74 @@ impl DsuProvider for SteamControllerProvider {
     fn gyro_reading(&self) -> Result<(f64, f64, f64), DsuError> {
         let (_, _, _, gx, gy, gz) = self.read_motion_data()?;
         Ok((gx, gy, gz))
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use crate::dsu::providers::steam_controller_provider::smooth_accel;
+    use super::*;
+
+    const TEST_INPUT_A: [u8;64] = [
+        0x1,0,0x9,0x40,0xc8,0x98,0x0a,0,
+        0,0,0,0,0,0,0,0,
+        0,0,0,0,0,0,0,0,
+        0x2d,0,0xdc,1,0xcb,0x3f,8,0,
+        2,0,1,0,0x90,0x77,0x56,0,
+        0xec,0xfe,0x52,0xd2,0,0,0,0,
+        0x90,3,0xac,0xfa,0x16,0xfd,0x7d,0xfe,
+        0,0,0,0,0,0,0,0
+    ];
+    const TEST_INPUT_B: [u8;64] = [
+        0x1,0,0x9,0x40,0xc8,0x98,0x0a,0,
+        0,0,0,0,0,0,0,0,
+        0,0,0,0,0,0,0,0,
+        0x46,0,0x3e,1,0x8b,0x3f,0xfc,0xff,
+        1,0,0xfe,0xff,0x90,0x77,0x56,0,
+        0xec,0xfe,0x52,0xd2,0,0,0,0,
+        0x90,0x03,0xac,0xfa,0x16,0xfd,0xa8,0xfe,
+        0,0,0,0,0,0,0,0
+    ];
+
+    #[test]
+    fn test_smooth_accel() {
+        let prev_acc = (0.0,0.0,0.0);
+        let acc = accel_from_buffer(&TEST_INPUT_A);
+        assert_eq!(
+            (
+                smooth_accel(prev_acc.0, acc.0),
+                smooth_accel(prev_acc.1, acc.1),
+                smooth_accel(prev_acc.2, acc.2)
+            ), 
+            (0.0006713867, 0.0014007569, 0.9848633));
+        let prev_acc = acc;
+        let acc = accel_from_buffer(&TEST_INPUT_B);
+        assert_eq!(
+            (
+                smooth_accel(prev_acc.0, acc.0),
+                smooth_accel(prev_acc.1, acc.1),
+                smooth_accel(prev_acc.2, acc.2)
+            ), 
+            (0.012945557, 0.027819823, 0.9856079));
+    }
+
+    #[test]
+    fn test_convert_gyro() {
+        let gyro = gyro_from_buffer(&TEST_INPUT_A);
+        assert_eq!(
+            (
+                convert_gyro_to_dps(gyro.0),
+                convert_gyro_to_dps(gyro.1),
+                convert_gyro_to_dps(gyro.2)
+            ), 
+            (0.0, 0.0, 9.0));
+        let gyro = gyro_from_buffer(&TEST_INPUT_B);
+        assert_eq!(
+            (
+                convert_gyro_to_dps(gyro.0),
+                convert_gyro_to_dps(gyro.1),
+                convert_gyro_to_dps(gyro.2)
+            ), 
+            (4080.0625, 15.875, 4089.0));
     }
 }

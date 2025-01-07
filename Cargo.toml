@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-sdl2 = "0.35"
+# sdl2 = "0.35"
 tokio = { version = "1", features = ["full"] }
 #windows = { version = "0.58.0", features = ["Devices_Sensors"] }
 #hidapi = { git = "https://github.com/ruabmbua/hidapi-rs.git", features = ["windows-native"] }
