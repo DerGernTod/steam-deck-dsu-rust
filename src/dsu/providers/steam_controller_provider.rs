@@ -20,6 +20,61 @@ const SCPacketType_CONFIGURE: u8 = 0x87;
 const SCPacketLength_CONFIGURE: u8 = 0x15;
 const SCConfigType_CONFIGURE: u8 = 0x32;
 
+
+/* Accelerometer has 16 bit resolution and a range of +/- 2g */
+const STEAM_DECK_ACCEL_RES_PER_G: i32 = 16384;
+const STEAM_DECK_ACCEL_RANGE: i32 = 32768;
+const STEAM_DECK_ACCEL_FUZZ: i32 = 32;
+/* Gyroscope has 16 bit resolution and a range of +/- 2000 dps */
+const STEAM_DECK_GYRO_RES_PER_DPS: i32 = 16;
+const STEAM_DECK_GYRO_RANGE: i32 = 32768;
+const STEAM_DECK_GYRO_FUZZ: i32 = 1;
+/* Input device props */
+const INPUT_PROP_ACCELEROMETER: usize = 0x06;
+const EV_MSC: usize = 0x04;
+const MSC_TIMESTAMP: usize = 0x05;
+
+
+/*
+command to be sent in feature report 
+	ID_CHECK_GYRO_FW_LOAD		= 0xC2,
+    ID_CLEAR_DIGITAL_MAPPINGS	= 0x81, // lizard 
+
+    /* Values for GYRO_MODE (bitmask) */
+enum {
+	SETTING_GYRO_MODE_OFF			= 0,
+	SETTING_GYRO_MODE_STEERING		= BIT(0),
+	SETTING_GYRO_MODE_TILT			= BIT(1),
+	SETTING_GYRO_MODE_SEND_ORIENTATION	= BIT(2),
+	SETTING_GYRO_MODE_SEND_RAW_ACCEL	= BIT(3),
+	SETTING_GYRO_MODE_SEND_RAW_GYRO		= BIT(4),
+};
+*/
+
+struct InputDevice {
+    property_bits: usize,
+    event_bits: usize,
+    misc_bits: usize,
+}
+
+struct SteamDevice {
+    hid_device: HidDevice,
+    sensors: Option<InputDevice>,
+    sensor_timestamp_us: usize
+}
+
+fn steam_sensors_register(steam: SteamDevice) -> i32 {
+    let hdev = steam.hid_device;
+    if let Some(_) = steam.sensors {
+        println!("Sensors already registered!");
+        return 0;
+    }
+
+    // let sensors = input_allocate_device();
+    // input_set_drvdata(sensors, steam);
+    
+}
+
 impl SteamControllerProvider {
     pub fn new() -> Result<SteamControllerProvider, DsuError> {
         let api = HidApi::new()?;
